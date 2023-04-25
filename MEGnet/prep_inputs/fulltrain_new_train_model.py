@@ -147,7 +147,7 @@ def make_classification_vector(input_vec):
     output[EKG] = 2
     return output
 
-def extract_all_datasets(dframe):
+def extract_all_datasets(dframe, subset=None):
     '''
     Loop over all datasets
     Load the spatial, temporal, and classIDs into numpy matrcies
@@ -165,6 +165,9 @@ def extract_all_datasets(dframe):
     '''
     TS_test, SP_test, class_vec = [], [], []
     for idx,input_vec in dframe.iterrows():
+        if subset!=None:
+            if idx > subset:
+                break
         print(idx)
         print(input_vec)
         TS_tmp, SP_tmp, CLid_tmp = get_inputs(input_vec)
@@ -209,12 +212,13 @@ from tensorflow import keras
 model_fname = op.join(MEGnet.__path__[0], 'model/MEGnet_final_model.h5')
 kModel = keras.models.load_model(model_fname, compile=False)
 
+#!!! Fix Don't save out the data because TS is not numpy 
 #Get all      
 if not os.path.exists(np_arr_topdir):
     if not op.exists(op.join(train_dir, 'ICAs')):
                       raise BaseException('Need to run make_links.sh')
     os.mkdir(np_arr_topdir)
-    arrTimeSeries, arrSpatialMap, class_ID = extract_all_datasets(final)
+    arrTimeSeries, arrSpatialMap, class_ID = extract_all_datasets(final)#, subset=200)
     np.save(arrTS_fname, arrTimeSeries)
     np.save(arrSP_fname, arrSpatialMap)
     np.save(arrC_ID_fname, class_ID)    
@@ -225,7 +229,7 @@ else:
     
 assert arrTimeSeries.shape[0] == arrSpatialMap.shape[0]
 assert class_ID.shape[0] == arrTimeSeries.shape[0]
-assert final.__len__() == int(arrTimeSeries.shape[0]/20)
+# assert final.__len__() == int(arrTimeSeries.shape[0]/20)
 
 # =============================================================================
 # Cross Validation
@@ -332,36 +336,152 @@ tsttr_sp, tsttr_ts, tsttr_clID = tsttr['sp'], tsttr['ts'], tsttr['clID']
 #oversampler= smote_variants.LLE_SMOTE()
 #X_samp, y_samp= oversampler.sample(X, y)
 # =============================================================================
-from imblearn.over_sampling import SMOTE
-def make_smote_sample(SP, class_vec):
-    spShape=SP.shape
-    sm = SMOTE(random_state=42)
-    test = SP.reshape([spShape[0], -1])  #Flatten X/Y/image depth
-    X_smote, y_smote = sm.fit_resample(test, class_vec) 
-    X_smote = X_smote.reshape([X_smote.shape[0], spShape[1], spShape[2], spShape[3]])
-    return X_smote, y_smote
+# from imblearn.over_sampling import SMOTE
+# def make_smote_sample(SP, class_vec):
+#     spShape=SP.shape
+#     sm = SMOTE(random_state=42)
+#     test = SP.reshape([spShape[0], -1])  #Flatten X/Y/image depth
+#     X_smote, y_smote = sm.fit_resample(test, class_vec) 
+#     X_smote = X_smote.reshape([X_smote.shape[0], spShape[1], spShape[2], spShape[3]])
+#     return X_smote, y_smote
 
-def make_dual_smote_sample(SP, TS, class_vec, seed=0):
-    spShape=SP.shape
-    test_sp = SP.reshape([spShape[0], -1])
-    test_ts = TS
+# def make_dual_smote_sample(SP, TS, class_vec, seed=0):
+#     spShape=SP.shape
+#     test_sp = SP.reshape([spShape[0], -1])
+#     test_ts = TS
     
-    sm = SMOTE(random_state=seed)
-    Xsp_smote, y_sp_smote = sm.fit_resample(test_sp, class_vec)
-    Xts_smote, y_ts_smote = sm.fit_resample(test_ts, class_vec)
-    assert np.alltrue([i==j for i,j in zip(y_sp_smote, y_ts_smote)])
-    Xsp_smote = Xsp_smote.reshape([Xsp_smote.shape[0], spShape[1], spShape[2], spShape[3]])
-    return Xsp_smote, Xts_smote, y_sp_smote
+#     sm = SMOTE(random_state=seed)
+#     Xsp_smote, y_sp_smote = sm.fit_resample(test_sp, class_vec)
+#     Xts_smote, y_ts_smote = sm.fit_resample(test_ts, class_vec)
+#     assert np.alltrue([i==j for i,j in zip(y_sp_smote, y_ts_smote)])
+#     Xsp_smote = Xsp_smote.reshape([Xsp_smote.shape[0], spShape[1], spShape[2], spShape[3]])
+#     return Xsp_smote, Xts_smote, y_sp_smote
 
 
 
 
 
 NB_EPOCH = 7 # 15
-BATCH_SIZE = 500 #  Approximately 12 or so examples per category in each batch
+BATCH_SIZE = 100 # 
 VERBOSE = 1
-# OPTIMIZER = Adam()  #switch to AdamW
-# VALIDATION_SPLIT = 0.20
+
+
+# =============================================================================
+# 
+# =============================================================================
+
+import tensorflow as tf
+history=[]
+tt_final = final.drop(index=holdout_dframe_idxs)
+tt_final.reset_index(inplace=True, drop=True)
+cv = cvSplits.main(kfolds=8, foldNormFields=crossval_cols, data_dframe=tt_final)
+class_weights={0:1, 1:1, 2:1, 3:1}
+
+cv_num=0
+sample = cv[cv_num]
+tr, te = get_cv_npyArr(sample,
+                      holdout=None,
+                      arrTimeSeries=tsttr_ts,  #Subsampled array
+                      arrSpatialMap=tsttr_sp, #Subsampled array
+                      class_ID=tsttr_clID,  #Subsampled array
+                    )
+
+SP_, TS_ , CL_ = tr['sp'],tr['ts'], tr['clID'] 
+
+from tensorflow import keras
+model_fname = op.join(MEGnet.__path__[0], 'model/MEGnet_final_model.h5')
+kModel = keras.models.load_model(model_fname, compile=False)
+
+def get_blocks(ts_current):
+    overlap = 3750
+    num_blocks = 8 #(ts_current.shape[1] - 15000) // overlap
+    blocks = np.zeros([num_blocks, ts_current.shape[0], 15000], dtype=float)
+    starts = np.arange(num_blocks)*3750
+    for i,start in enumerate(starts): 
+        blocks[i,:,:] = ts_current[:,start:start+15000]
+    return tf.convert_to_tensor(blocks)
+
+
+def train_step(self, data):
+    # Unpack the data. Its structure depends on your model and
+    # on what you pass to `fit()`.
+    # print(type(data))
+    x, y = data[0],data[1]
+    starts = np.array([    0,  3750,  7500, 11250, 15000, 18750, 22500, 26250, 30000])
+    # ends = tf.constant([i+15000 for i in starts])
+    
+    with tf.GradientTape() as tape:
+        # blocks = get_blocks(x['temporal_input'].numpy())
+        # print(blocks.shape)
+        # shape_var = tf.shape(x['temporal_input']).shape
+        shape_var = x['temporal_input'].shape
+        preds = np.zeros([len(starts), shape_var[0], 4])
+        # print(preds.shape)
+        for i, start in enumerate(starts): 
+            # block = x['temporal_input'][:,start:start+15000]
+            # tmp = self(dict(spatial_input=x['spatial_input'],
+            #                          temporal_input=x['temporal_input'][:,start:start+15000]),
+            #                     training=True)
+            preds[i,:,:] = self(dict(spatial_input=x['spatial_input'],
+                                      temporal_input=x['temporal_input'].numpy()[:,start:start+15000]),
+                                training=True)
+            
+        # preds = np.zeros([blocks.shape[0], blocks.shape[1], 4]) #Time blocks / 20 components / 4 classes
+        # for i in range(blocks.shape[0]): 
+        #     preds[i,:, :]=self(dict(spatial_input=x['spatial_input'],
+        #                                           temporal_input=blocks[i,:,:]),  
+        #                        training=True)
+        preds = np.mean(preds, axis=0)
+        y_pred=tf.convert_to_tensor(preds)
+        # print(preds_av)
+        # y_pred = np.argmax(preds_av, axis=1) #.astype(np.int64) #astype(int)#.reshape(-1)  #Do we want argmax or weighted 
+        # y_pred = tf.constant(y_pred, dtype=tf.int64, shape=y_pred.shape)
+        # print(y_pred)
+        # print(y)
+
+        # y = tf.constant(y, dtype=tf.int64, shape=y.shape)
+        # y_pred.rank=2
+        # y_pred.shape.rank=2
+        # y_pred = tf.convert_to_tensor(y_pred)
+        # y_pred = tf.convert_to_tensor(y_pred) 
+        # print(y.numpy())
+        # print(y_pred)
+        # y_pred = self(x, training=True)  # Forward pass
+        # Compute the loss value
+        # (the loss function is configured in `compile()`)
+        # print(y_pred.numpy())
+        loss = self.compiled_loss(y, y_pred, regularization_losses=self.losses)
+
+    # Compute gradients
+    trainable_vars = self.trainable_variables
+    gradients = tape.gradient(loss, trainable_vars)
+    # Update weights
+    self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+    # Update metrics (includes the metric that tracks the loss)
+    self.compiled_metrics.update_state(y, y_pred)
+    # Return a dict mapping metric names to current value
+    return {m.name: m.result() for m in self.metrics}
+
+kModel.train_step = train_step.__get__(kModel)
+kModel.compile(
+    loss=keras.losses.SparseCategoricalCrossentropy(), 
+    optimizer='Adam',
+    metrics=['accuracy'],
+    run_eagerly=True
+    )
+
+history_tmp = kModel.fit(x=dict(spatial_input=SP_, temporal_input=TS_), y=CL_,
+                     batch_size=BATCH_SIZE, epochs=NB_EPOCH, verbose=VERBOSE,   #validation_split=VALIDATION_SPLIT,
+                     validation_data=(dict(spatial_input=te['sp'], temporal_input=te['ts']), te['clID']),
+                     class_weight=class_weights)#, steps_per_epoch=100, validation_steps=100)
+                     
+                     # steps_per_epoch and validation_steps
+                     
+                     # )
+
+
+
+
 
 #get_f1_met = tfa.metrics.F1Score(num_classes=4)#, threshold=0.5)  #This seems to errror out when used
 
