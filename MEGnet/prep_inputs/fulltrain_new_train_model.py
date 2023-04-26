@@ -401,83 +401,88 @@ def get_blocks(ts_current):
         blocks[i,:,:] = ts_current[:,start:start+15000]
     return tf.convert_to_tensor(blocks)
 
-
-def train_step(self, data):
-    # Unpack the data. Its structure depends on your model and
-    # on what you pass to `fit()`.
-    # print(type(data))
-    x, y = data[0],data[1]
-    starts = np.array([    0,  3750,  7500, 11250, 15000, 18750, 22500, 26250, 30000])
-    # ends = tf.constant([i+15000 for i in starts])
+class CustomModel(keras.Model):
+    def train_step(self, data):
+        # Unpack the data. Its structure depends on your model and
+        # on what you pass to `fit()`.
+        # print(type(data))
+        if len(data)==3:
+            x, y, sample_weight = data
+        else:
+            x, y = data
+            sample_weight=None
+        starts = np.array([    0,  3750,  7500, 11250, 15000, 18750, 22500, 26250, 30000])
+        # ends = tf.constant([i+15000 for i in starts])
+        
+        with tf.GradientTape() as tape:
+            # blocks = get_blocks(x['temporal_input'].numpy())
+            # print(blocks.shape)
+            # shape_var = tf.shape(x['temporal_input']).shape
+            shape_var = x['temporal_input'].shape
+            preds = np.zeros([len(starts), shape_var[0], 4])
+            # print(preds.shape)
+            for i, start in enumerate(starts): 
+                # block = x['temporal_input'][:,start:start+15000]
+                # tmp = self(dict(spatial_input=x['spatial_input'],
+                #                          temporal_input=x['temporal_input'][:,start:start+15000]),
+                #                     training=True)
+                preds[i,:,:] = self(dict(spatial_input=x['spatial_input'],
+                                          temporal_input=x['temporal_input'][:,start:start+15000]),
+                                    training=True)
+                
+            # preds = np.zeros([blocks.shape[0], blocks.shape[1], 4]) #Time blocks / 20 components / 4 classes
+            # for i in range(blocks.shape[0]): 
+            #     preds[i,:, :]=self(dict(spatial_input=x['spatial_input'],
+            #                                           temporal_input=blocks[i,:,:]),  
+            #                        training=True)
+            preds = np.mean(preds, axis=0)
+            y_pred=tf.convert_to_tensor(preds)
+            # print(preds_av)
+            # y_pred = np.argmax(preds, axis=1) #.astype(np.int64) #astype(int)#.reshape(-1)  #Do we want argmax or weighted 
+            # y_pred = tf.constant(y_pred, dtype=tf.int64, shape=y_pred.shape)
+            # print(y_pred)
+            # print(y)
     
-    with tf.GradientTape() as tape:
-        # blocks = get_blocks(x['temporal_input'].numpy())
-        # print(blocks.shape)
-        # shape_var = tf.shape(x['temporal_input']).shape
-        shape_var = x['temporal_input'].shape
-        preds = np.zeros([len(starts), shape_var[0], 4])
-        # print(preds.shape)
-        for i, start in enumerate(starts): 
-            # block = x['temporal_input'][:,start:start+15000]
-            # tmp = self(dict(spatial_input=x['spatial_input'],
-            #                          temporal_input=x['temporal_input'][:,start:start+15000]),
-            #                     training=True)
-            preds[i,:,:] = self(dict(spatial_input=x['spatial_input'],
-                                      temporal_input=x['temporal_input'].numpy()[:,start:start+15000]),
-                                training=True)
-            
-        # preds = np.zeros([blocks.shape[0], blocks.shape[1], 4]) #Time blocks / 20 components / 4 classes
-        # for i in range(blocks.shape[0]): 
-        #     preds[i,:, :]=self(dict(spatial_input=x['spatial_input'],
-        #                                           temporal_input=blocks[i,:,:]),  
-        #                        training=True)
-        preds = np.mean(preds, axis=0)
-        y_pred=tf.convert_to_tensor(preds)
-        # print(preds_av)
-        # y_pred = np.argmax(preds_av, axis=1) #.astype(np.int64) #astype(int)#.reshape(-1)  #Do we want argmax or weighted 
-        # y_pred = tf.constant(y_pred, dtype=tf.int64, shape=y_pred.shape)
-        # print(y_pred)
-        # print(y)
+            # y = tf.constant(y, dtype=tf.int64, shape=y.shape)
+            # y_pred.rank=2
+            # y_pred.shape.rank=2
+            # y_pred = tf.convert_to_tensor(y_pred)
+            # y_pred = tf.convert_to_tensor(y_pred) 
+            # print(y.numpy())
+            # print(y_pred)
+            # y_pred = self(x, training=True)  # Forward pass
+            # Compute the loss value
+            # (the loss function is configured in `compile()`)
+            # print(y_pred.numpy())
+            loss = self.compiled_loss(y, y_pred, regularization_losses=self.losses,
+                                      sample_weight=sample_weight)
+        # Compute gradients
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+        # Update weights
+        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+        # Update metrics (includes the metric that tracks the loss)
+        self.compiled_metrics.update_state(y, y_pred)
+        # Return a dict mapping metric names to current value
+        return {m.name: m.result() for m in self.metrics}
 
-        # y = tf.constant(y, dtype=tf.int64, shape=y.shape)
-        # y_pred.rank=2
-        # y_pred.shape.rank=2
-        # y_pred = tf.convert_to_tensor(y_pred)
-        # y_pred = tf.convert_to_tensor(y_pred) 
-        # print(y.numpy())
-        # print(y_pred)
-        # y_pred = self(x, training=True)  # Forward pass
-        # Compute the loss value
-        # (the loss function is configured in `compile()`)
-        # print(y_pred.numpy())
-        loss = self.compiled_loss(y, y_pred, regularization_losses=self.losses)
 
-    # Compute gradients
-    trainable_vars = self.trainable_variables
-    gradients = tape.gradient(loss, trainable_vars)
-    # Update weights
-    self.optimizer.apply_gradients(zip(gradients, trainable_vars))
-    # Update metrics (includes the metric that tracks the loss)
-    self.compiled_metrics.update_state(y, y_pred)
-    # Return a dict mapping metric names to current value
-    return {m.name: m.result() for m in self.metrics}
+lModel= CustomModel(kModel.inputs, outputs=kModel.outputs)
 
-kModel.train_step = train_step.__get__(kModel)
-kModel.compile(
+
+# kModel.train_step = train_step.__get__(kModel)
+lModel.compile(
     loss=keras.losses.SparseCategoricalCrossentropy(), 
     optimizer='Adam',
     metrics=['accuracy'],
     run_eagerly=True
     )
-
-history_tmp = kModel.fit(x=dict(spatial_input=SP_, temporal_input=TS_), y=CL_,
-                     batch_size=BATCH_SIZE, epochs=NB_EPOCH, verbose=VERBOSE,   #validation_split=VALIDATION_SPLIT,
+# kModel.train_step = train_step.__get__(kModel)
+history_tmp = lModel.fit(x=dict(spatial_input=SP_, temporal_input=TS_), y=CL_,
+                     batch_size=BATCH_SIZE, epochs=20, verbose=VERBOSE,   
                      validation_data=(dict(spatial_input=te['sp'], temporal_input=te['ts']), te['clID']),
-                     class_weight=class_weights)#, steps_per_epoch=100, validation_steps=100)
+                     class_weight=class_weights)
                      
-                     # steps_per_epoch and validation_steps
-                     
-                     # )
 
 
 
