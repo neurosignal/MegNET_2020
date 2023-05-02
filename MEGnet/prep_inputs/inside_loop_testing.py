@@ -8,6 +8,14 @@ Created on Mon Apr 17 16:13:28 2023
 
 https://keras.io/guides/customizing_what_happens_in_fit/
 
+
+import tensorflow as tf
+history=[]
+tt_final = final.drop(index=holdout_dframe_idxs)
+tt_final.reset_index(inplace=True, drop=True)
+cv = cvSplits.main(kfolds=8, foldNormFields=crossval_cols, data_dframe=tt_final)
+class_weights={0:1, 1:1, 2:1, 3:1}
+
 cv_num=0
 sample = cv[cv_num]
 tr, te = get_cv_npyArr(sample,
@@ -20,14 +28,13 @@ tr, te = get_cv_npyArr(sample,
 SP_, TS_ , CL_ = tr['sp'],tr['ts'], tr['clID'] 
 # SP_, TS_ , CL_ = make_dual_smote_sample(tr['sp'],tr['ts'], tr['clID'], seed=int(cv_num))  
                    
-history_tmp = kModel.fit(x=dict(spatial_input=SP_, temporal_input=TS_), y=CL_,
-                     batch_size=BATCH_SIZE, epochs=NB_EPOCH, verbose=VERBOSE,   #validation_split=VALIDATION_SPLIT,
-                     validation_data=(dict(spatial_input=te['sp'], temporal_input=te['ts']), te['clID']),
-                     class_weight=class_weights)
+# history_tmp = kModel.fit(x=dict(spatial_input=SP_, temporal_input=TS_), y=CL_,
+#                      batch_size=BATCH_SIZE, epochs=NB_EPOCH, verbose=VERBOSE,   #validation_split=VALIDATION_SPLIT,
+#                      validation_data=(dict(spatial_input=te['sp'], temporal_input=te['ts']), te['clID']),
+#                      class_weight=class_weights)
 
 
 
-from tensorflow import keras
 
 
 from tensorflow import keras
@@ -36,7 +43,8 @@ model_fname = op.join(MEGnet.__path__[0], 'model/MEGnet_final_model.h5')
 kModel = keras.models.load_model(model_fname, compile=False)
 
 def get_blocks(ts_current):
-    num_blocks = (ts_current.shape[1] - 15000) // overlap
+    overlap = 3750
+    num_blocks = 8 #(ts_current.shape[1] - 15000) // overlap
     blocks = np.zeros([num_blocks, ts_current.shape[0], 15000], dtype=float)
     starts = np.arange(num_blocks)*3750
     for i,start in enumerate(starts): 
@@ -70,20 +78,20 @@ def block_predict(sp_current, ts_current):
 def train_step(self, data):
     # Unpack the data. Its structure depends on your model and
     # on what you pass to `fit()`.
-    x, y = data
-    
-    num_vecs=x['temporal_input'].shape[0] #len(x['temporal_input'])
+   
+    x, y = data[0],data[1]
+    num_vecs=BATCH_SIZE #len(y) #.shape #x['temporal_input'].shape[0]
+    overlap = 3750
     with tf.GradientTape() as tape:
-        # y_pred_stack = np.zeros([x.shape[0], 20,4])
-        overlap = 3750
-        
-        blocks = get_blocks(x['temporal_input'])
-        preds = np.zeros([blocks.shape[0], num_vecs, 4]) #Time blocks / 20 components / 4 classes
+        blocks = get_blocks(x['temporal_input'].numpy())
+        print(blocks.shape)
+        preds = np.zeros([blocks.shape[0], blocks.shape[1], 4]) #Time blocks / 20 components / 4 classes
         for i in range(blocks.shape[0]): 
             preds[i,:, :]=self(dict(spatial_input=x['spatial_input'],
-                                                  temporal_input=blocks[i,:,:].squeeze()), training=True)
-        # y_pred_stack[i,:,:] = preds.mean(axis=0)
-        y_pred = np.argmax(preds.mean(axis=0), axis=1).reshape(-1)  #Do we want argmax or weighted 
+                                                  temporal_input=blocks[i,:,:].squeeze()),  
+                               training=True)
+        preds_av = preds.mean(axis=0)
+        y_pred = np.argmax(preds_av, axis=1).reshape(-1)  #Do we want argmax or weighted 
         
         # y_pred = self(x, training=True)  # Forward pass
         # Compute the loss value
@@ -101,6 +109,12 @@ def train_step(self, data):
     return {m.name: m.result() for m in self.metrics}
 
 kModel.train_step = train_step.__get__(kModel)
+kModel.compile(
+    loss=keras.losses.SparseCategoricalCrossentropy(), 
+    optimizer='Adam',
+    metrics=['accuracy'],
+    run_eagerly=True
+    )
 
 history_tmp = kModel.fit(x=dict(spatial_input=SP_, temporal_input=TS_), y=CL_,
                      batch_size=BATCH_SIZE, epochs=NB_EPOCH, verbose=VERBOSE,   #validation_split=VALIDATION_SPLIT,
